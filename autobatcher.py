@@ -7,6 +7,9 @@ import functools
 import cv2 as cv
 import numpy as np
 
+np.random.seed(1)
+
+class AutoBatcher:
 '''
 AutoBatcher is a tiny python3 module for assisting deep learning
 trainings on computer vision tasks. It prevents the main training file
@@ -32,10 +35,6 @@ Development roadmap includes,
 - Online batch resampling support for imbalanced datasets.
 - Windows support.
 '''
-
-np.random.seed(1)
-
-class AutoBatcher:
 	def __init__(self,):
 		# Config for training
 		self._minibatch_size = 0
@@ -46,6 +45,10 @@ class AutoBatcher:
 		self._label_list = None
 		self._data_filenames_list = []
 		self._f = None
+
+		# Ordering: BGR
+		self._channel_mean_vals = [0.0,0.0,0.0]
+		self._channel_std_vals  = [0.0,0.0,0.0]
 
 		# Dynamic elements that change during training
 		self._dataset_order_indices= None
@@ -87,18 +90,18 @@ class AutoBatcher:
 		if dataset_path_contains_all_dirs:
 			print('[AutoBatcher] Loading from dirs.')
 			category_names_as_dirs = sorted(os.listdir(dataset_basedir_path))
+			ti._no_of_classes = len(category_names_as_dirs)
 
 			category = 0
-			for root, dirs, files in os.walk(dataset_basedir_path):
-				if len(files) == 0: continue
-				dirs.sort()
-				onehot = len(category_names_as_dirs)*[0.0]
-				onehot[category] = 1.0
-				for idx, filename in enumerate(files):
-					data_filenames.append( os.path.join(root, filename) )
-					label_list.append( onehot )
-				category += 1
-			ti._no_of_classes = len(category_names_as_dirs)
+			for category_dir in category_names_as_dirs:
+				for root, _, files in os.walk( os.path.join(dataset_basedir_path, category_dir) ):
+					files.sort()
+					onehot = ti._no_of_classes*[0.0]
+					onehot[category] = 1.0
+					for idx, filename in enumerate(files):
+						data_filenames.append( os.path.join(root, filename) )
+						label_list.append( onehot )
+					category += 1
 
 		else:
 			print('[AutoBatcher] Loading from metafile.')
@@ -164,8 +167,27 @@ class AutoBatcher:
 				labels 		 = ti._f.create_dataset(ti._dataset_name+"_labels", (ti._no_of_samples, ti._no_of_classes ), 	dtype='f')
 			
 		for idx, filepath in enumerate(data_filenames):
-			datatensor[idx,:,:,:] = 1.0-(cv.imread(os.path.join(dataset_basedir_path, filepath))[0:ti._height,0:ti._width,:] / 255.0)
-		
+			datatensor[idx,:,:,:] = cv.imread(os.path.join(dataset_basedir_path, filepath))[0:ti._height,0:ti._width,:]
+
+		# normalize according to mean and std
+		for ch in (0,1,2):
+			mean_val = np.mean(datatensor[:,:,:,ch])
+			std_val  = np.std(datatensor[:,:,:,ch])
+			ti._channel_mean_vals[ch] = mean_val
+			ti._channel_std_vals[ch] = std_val
+
+			datatensor[:,:,:,ch] -= mean_val
+			datatensor[:,:,:,ch] /= std_val
+
+		# Additionally, write channel_means_and_stds to serialized file (if it was ever serialized)
+		if ti._f:
+			ti._f.attrs['b_mean'] = ti._channel_mean_vals[0]
+			ti._f.attrs['g_mean'] = ti._channel_mean_vals[1]
+			ti._f.attrs['r_mean'] = ti._channel_mean_vals[2]
+			ti._f.attrs['b_std'] = ti._channel_std_vals[0]
+			ti._f.attrs['g_std'] = ti._channel_std_vals[1]
+			ti._f.attrs['r_std'] = ti._channel_std_vals[2]
+
 		for idx, label in enumerate(label_list):
 			labels[idx] = label
 
@@ -188,13 +210,21 @@ class AutoBatcher:
 		ti._no_of_samples = len(ti._f[a])
 
 		probed_image = ti._f[a][0,:,:,:]
-		[ti._height, ti._width, ti._channels ] = list(probed_image.shape)
+		[ti._height, ti._width, ti._channels] = list(probed_image.shape)
 
 		print('[AutoBatcher] Loaded image dims: {} {} {}'.format(ti._height, ti._width, ti._channels))
 
 		probed_label = ti._f[b][0,:]
 		[ti._no_of_classes] = list(probed_label.shape)
 
+		ti._channel_mean_vals[0] = ti._f.attrs['b_mean']
+		ti._channel_mean_vals[1] = ti._f.attrs['g_mean']
+		ti._channel_mean_vals[2] = ti._f.attrs['r_mean']
+		ti._channel_std_vals[0] = ti._f.attrs['b_std']
+		ti._channel_std_vals[1] = ti._f.attrs['g_std']
+		ti._channel_std_vals[2] = ti._f.attrs['r_std']
+
+		print(ti._channel_mean_vals)
 		ti._dataset_name = a[:str(a).find("_images")]
 		ti._data_tensor	= ti._f[a]
 		ti._label_list 	= ti._f[b]
@@ -204,10 +234,22 @@ class AutoBatcher:
 		return ti
 
 
-	def serializeToDisk(self,h5_filepath,dset_name,dim_dict):
-		f = h5py.File( os.path.join(h5_filepath,dset_name)+(".hdf5"), "w")
-		f.create_dataset(dset_name+"_images", (dim_dict["b"], dim_dict["h"],dim_dict["w"],dim_dict["c"]), dtype='f')
-		f.create_dataset(dset_name+"_labels", (dim_dict["b"], dim_dict["nc"] ), 	dtype='f')
+	def serializeToDisk(self,h5_file_path,filename):
+		if not os.path.isdir(h5_file_path):
+			raise AssertionError('Given path does not exist.')
+			
+		if not '.hdf5' in filename:
+			filename +=  ".hdf5"
+
+		f = h5py.File( os.path.join(h5_file_path,filename), "w" )
+		f.create_dataset(self._dataset_name+"_images", (self._no_of_samples, self._height,self._width,self._channels), dtype='f', data=self._data_tensor)
+		f.create_dataset(self._dataset_name+"_labels", (self._no_of_samples, self._no_of_classes),  									 dtype='f', data=self._label_list)
+		f.attrs['b_mean'] = self._channel_mean_vals[0]
+		f.attrs['g_mean'] = self._channel_mean_vals[1]
+		f.attrs['r_mean'] = self._channel_mean_vals[2]
+		f.attrs['b_std'] = self._channel_std_vals[0]
+		f.attrs['g_std'] = self._channel_std_vals[1]
+		f.attrs['r_std'] = self._channel_std_vals[2]
 		f.close()
 
 

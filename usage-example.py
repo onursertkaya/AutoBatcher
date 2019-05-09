@@ -30,7 +30,7 @@ def main():
 
 	epochs = 100
 	for i in range(epochs):
-		print('Epoch {} / {}\n'.format(i,epochs))
+		print('Epoch {:3d} / {:3d}\n'.format(i,epochs))
 		while True:
 			epoch_complete,x,y = ab.getNextMiniBatch()
 			model.train_on_batch(x,y)

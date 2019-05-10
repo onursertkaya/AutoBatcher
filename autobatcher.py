@@ -10,31 +10,31 @@ import numpy as np
 np.random.seed(1)
 
 class AutoBatcher:
-'''
-AutoBatcher is a tiny python3 module for assisting deep learning
-trainings on computer vision tasks. It prevents the main training file
-to turn into some chaotic spagetti (which we all suffer from.)
+	'''
+	AutoBatcher is a tiny python3 module for assisting deep learning
+	trainings on computer vision tasks. It prevents the main training file
+	to turn into some chaotic spagetti (which we all suffer from.)
 
 
-Some remarks,
-- It automatically decides on the loading mode: "in-memory training" or
-	"loading serialized data from disk" according to the available memory
-	and dataset size.
-- Supports two modes of data preparation: from a "well-organized directory
-	structure" or a meta-data file that contains the path and category
-	information for each image.
-- Uses h5py for serialization/deserialization of data.
-- Leverages numpy for fast array indexing/sorting/accessing.
-- Uses opencv to load images.
-- Accepts preprocessed square images, sizes of which are known and same.
+	Some remarks,
+	- It automatically decides on the loading mode: "in-memory training" or
+		"loading serialized data from disk" according to the available memory
+		and dataset size.
+	- Supports two modes of data preparation: from a "well-organized directory
+		structure" or a meta-data file that contains the path and category
+		information for each image.
+	- Uses h5py for serialization/deserialization of data.
+	- Leverages numpy for fast array indexing/sorting/accessing.
+	- Uses opencv to load images.
+	- Accepts preprocessed square images, sizes of which are known and same.
 
 
-Development roadmap includes,
-- Preprocessing and augmentation methods on arbitrarily-collected data.
-- PIL support for those who don't like opencv.
-- Online batch resampling support for imbalanced datasets.
-- Windows support.
-'''
+	Development roadmap includes,
+	- Preprocessing and augmentation methods on arbitrarily-collected data.
+	- PIL support for those who don't like opencv.
+	- Online batch resampling support for imbalanced datasets.
+	- Windows support.
+	'''
 	def __init__(self,):
 		# Config for training
 		self._minibatch_size = 0
@@ -44,9 +44,10 @@ Development roadmap includes,
 		self._data_tensor = None
 		self._label_list = None
 		self._data_filenames_list = []
+		self._category_distribution = None
 		self._f = None
 
-		# Ordering: BGR
+		# Sufficient Stats. Ordering: BGR
 		self._channel_mean_vals = [0.0,0.0,0.0]
 		self._channel_std_vals  = [0.0,0.0,0.0]
 
@@ -91,6 +92,7 @@ Development roadmap includes,
 			print('[AutoBatcher] Loading from dirs.')
 			category_names_as_dirs = sorted(os.listdir(dataset_basedir_path))
 			ti._no_of_classes = len(category_names_as_dirs)
+			ti._category_distribution = []
 
 			category = 0
 			for category_dir in category_names_as_dirs:
@@ -98,10 +100,15 @@ Development roadmap includes,
 					files.sort()
 					onehot = ti._no_of_classes*[0.0]
 					onehot[category] = 1.0
+					ctr = 0
 					for idx, filename in enumerate(files):
 						data_filenames.append( os.path.join(root, filename) )
 						label_list.append( onehot )
+						ctr += 1
+					ti._category_distribution.append(ctr)
 					category += 1
+			ti._category_distribution = np.array(ti._category_distribution, dtype=np.float32)
+			ti._category_distribution /= np.sum(ti._category_distribution)
 
 		else:
 			print('[AutoBatcher] Loading from metafile.')
@@ -165,6 +172,7 @@ Development roadmap includes,
 				ti._f = h5py.File( os.path.join(h5_dir_path,ti._dataset_name)+(".hdf5"), "w")
 				datatensor = ti._f.create_dataset(ti._dataset_name+"_images", (ti._no_of_samples, ti._height,ti._width,ti._channels), dtype='f')
 				labels 		 = ti._f.create_dataset(ti._dataset_name+"_labels", (ti._no_of_samples, ti._no_of_classes ), 	dtype='f')
+				ti._f.attrs['category_dist'] = ti._category_distribution
 			
 		for idx, filepath in enumerate(data_filenames):
 			datatensor[idx,:,:,:] = cv.imread(os.path.join(dataset_basedir_path, filepath))[0:ti._height,0:ti._width,:]
@@ -181,12 +189,8 @@ Development roadmap includes,
 
 		# Additionally, write channel_means_and_stds to serialized file (if it was ever serialized)
 		if ti._f:
-			ti._f.attrs['b_mean'] = ti._channel_mean_vals[0]
-			ti._f.attrs['g_mean'] = ti._channel_mean_vals[1]
-			ti._f.attrs['r_mean'] = ti._channel_mean_vals[2]
-			ti._f.attrs['b_std'] = ti._channel_std_vals[0]
-			ti._f.attrs['g_std'] = ti._channel_std_vals[1]
-			ti._f.attrs['r_std'] = ti._channel_std_vals[2]
+			ti._f.attrs['bgr_means'] = ti._channel_mean_vals
+			ti._f.attrs['bgr_stds'] = ti._channel_std_vals
 
 		for idx, label in enumerate(label_list):
 			labels[idx] = label
@@ -217,14 +221,13 @@ Development roadmap includes,
 		probed_label = ti._f[b][0,:]
 		[ti._no_of_classes] = list(probed_label.shape)
 
-		ti._channel_mean_vals[0] = ti._f.attrs['b_mean']
-		ti._channel_mean_vals[1] = ti._f.attrs['g_mean']
-		ti._channel_mean_vals[2] = ti._f.attrs['r_mean']
-		ti._channel_std_vals[0] = ti._f.attrs['b_std']
-		ti._channel_std_vals[1] = ti._f.attrs['g_std']
-		ti._channel_std_vals[2] = ti._f.attrs['r_std']
+		ti._channel_mean_vals = ti._f.attrs['bgr_means']
+		ti._channel_std_vals  = ti._f.attrs['bgr_stds']
+		
+		ti._category_distribution = ti._f.attrs['category_dist']
 
 		print(ti._channel_mean_vals)
+		print(ti._category_distribution)
 		ti._dataset_name = a[:str(a).find("_images")]
 		ti._data_tensor	= ti._f[a]
 		ti._label_list 	= ti._f[b]
@@ -244,12 +247,9 @@ Development roadmap includes,
 		f = h5py.File( os.path.join(h5_file_path,filename), "w" )
 		f.create_dataset(self._dataset_name+"_images", (self._no_of_samples, self._height,self._width,self._channels), dtype='f', data=self._data_tensor)
 		f.create_dataset(self._dataset_name+"_labels", (self._no_of_samples, self._no_of_classes),  									 dtype='f', data=self._label_list)
-		f.attrs['b_mean'] = self._channel_mean_vals[0]
-		f.attrs['g_mean'] = self._channel_mean_vals[1]
-		f.attrs['r_mean'] = self._channel_mean_vals[2]
-		f.attrs['b_std'] = self._channel_std_vals[0]
-		f.attrs['g_std'] = self._channel_std_vals[1]
-		f.attrs['r_std'] = self._channel_std_vals[2]
+		f.attrs['bgr_means'] = self._channel_mean_vals
+		f.attrs['bgr_stds'] = self._channel_std_vals
+		f.attrs['category_dist'] = self._category_distribution
 		f.close()
 
 
@@ -260,6 +260,7 @@ Development roadmap includes,
 	def getNextMiniBatch(self, sampling_policy='random'):
 		minibatch_datatensor = None
 		minibatch_labels 		 = None
+		
 		if sampling_policy == 'random':
 			src  = self._current_batch_idx
 			trgt = self._current_batch_idx+self._minibatch_size
@@ -284,6 +285,9 @@ Development roadmap includes,
 			print('[AutoBatcher] Not implemented yet.')
 		elif sampling_policy == 'mixup':
 			print('[AutoBatcher] Not implemented yet.')
+		elif sampling_policy == 'resample':
+			print('[AutoBatcher] Not implemented yet.')
+		
 				
 		return last_minibatch_of_epoch_is_reached, minibatch_datatensor, minibatch_labels
 

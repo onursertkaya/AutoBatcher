@@ -81,10 +81,9 @@ class AutoBatcher:
 
 		ti = cls()
 
-		dataset_path_contains_all_dirs = functools.reduce(lambda x,y: x and y,
-																											[ os.path.isdir(os.path.join(dataset_basedir_path,i))
-																												for i in sorted(os.listdir(dataset_basedir_path)) ]
-																											)
+		dataset_path_contains_all_dirs = all( [ os.path.isdir(os.path.join(dataset_basedir_path,i))
+																						for i in sorted(os.listdir(dataset_basedir_path)) ] )
+
 		data_filenames, label_list = [], []
 
 
